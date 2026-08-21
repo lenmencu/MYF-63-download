@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "histool"
+version = "1.0.0"
+description = "HiSilicon WS63 / BS2X serial flash and monitor (esptool-like)"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[project.scripts]
+histool = "hisboot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hisboot*"]
