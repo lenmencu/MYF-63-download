@@ -87,7 +87,6 @@ select {
 }
 
 .badge {
-  margin-left: auto;
   font-size: 12px;
   color: var(--muted);
   border: 1px solid var(--line);
@@ -269,6 +268,15 @@ select {
   flex: 1;
   padding: 10px 14px;
   margin-top: 0;
+}
+
+.flash-go:not(:disabled) {
+  background: #3f9362;
+}
+
+.flash-go.running:disabled {
+  background: #b94f4f;
+  opacity: 1;
 }
 
 .bar {

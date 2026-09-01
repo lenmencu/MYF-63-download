@@ -211,7 +211,12 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
           <p className="hint">请选择正确的烧录口；点击开始烧录后，请按一次开发板复位键。</p>
 
           <div className="flash-actions">
-            <button type="button" className="btn primary flash-go" disabled={!canFlash} onClick={() => void startFlash()}>
+            <button
+              type="button"
+              className={flashing ? 'btn primary flash-go running' : 'btn primary flash-go'}
+              disabled={!canFlash}
+              onClick={() => void startFlash()}
+            >
               {flashing ? stage : '开始烧录'}
             </button>
             {flashing ? (
