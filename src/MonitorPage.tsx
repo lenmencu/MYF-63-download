@@ -2,15 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { AVAIL_BAUD } from './flash/chip.ts'
 import { PortPicker } from './PortPicker.tsx'
 import { hasWebSerial, portLabel, sleep, WebSerialPort } from './serial/web-serial.ts'
-
-type Newline = 'none' | 'lf' | 'cr' | 'crlf'
-
-const NEWLINE: Record<Newline, Uint8Array> = {
-  none: new Uint8Array(),
-  lf: new Uint8Array([0x0a]),
-  cr: new Uint8Array([0x0d]),
-  crlf: new Uint8Array([0x0d, 0x0a]),
-}
+import {
+  appendMonitorEntry,
+  buildSerialPayload,
+  type MonitorLogEntry,
+  type MonitorNewline,
+} from './ui/monitor-log.ts'
 
 type Props = {
   ports: SerialPort[]
@@ -30,16 +27,17 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
   const [open, setOpen] = useState(false)
   const [baud, setBaud] = useState(115200)
   const baudRef = useRef(115200)
-  const [newline, setNewline] = useState<Newline>('crlf')
+  const [newline, setNewline] = useState<MonitorNewline>('crlf')
   const [autoScroll, setAutoScroll] = useState(true)
   const [timestamps, setTimestamps] = useState(true)
   const [text, setText] = useState('')
-  const [log, setLog] = useState('')
+  const [log, setLog] = useState<MonitorLogEntry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [deviceLabel, setDeviceLabel] = useState('未连接')
   const sessionRef = useRef<WebSerialPort | null>(null)
   const decoderRef = useRef(new TextDecoder())
   const lineStartRef = useRef(true)
+  const entryIdRef = useRef(0)
   const logBoxRef = useRef<HTMLPreElement>(null)
   const stopRef = useRef(false)
   const timestampsRef = useRef(timestamps)
@@ -74,10 +72,8 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
       }
       chunk = out
     }
-    setLog((prev) => {
-      const next = prev + chunk
-      return next.length > 200_000 ? next.slice(next.length - 160_000) : next
-    })
+    const entry = { id: ++entryIdRef.current, direction: 'rx' as const, text: chunk }
+    setLog((prev) => appendMonitorEntry(prev, entry))
   }
 
   async function pump(io: WebSerialPort) {
@@ -131,13 +127,22 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
   async function send() {
     const io = sessionRef.current
     if (!io || !open) return
-    const payload = new TextEncoder().encode(text)
-    const line = NEWLINE[newline]
-    const out = new Uint8Array(payload.length + line.length)
-    out.set(payload)
-    out.set(line, payload.length)
-    await io.write(out)
-    setText('')
+    const command = text
+    const out = buildSerialPayload(command, newline)
+    try {
+      await io.write(out)
+      const ending = newline === 'none' ? '' : `  ⏎ ${newline === 'crlf' ? '\\r\\n' : `\\${newline === 'lf' ? 'n' : 'r'}`}`
+      const entry = {
+        id: ++entryIdRef.current,
+        direction: 'tx' as const,
+        text: `\n[${stamp()}]  TX › ${command}${ending}\n`,
+      }
+      setLog((prev) => appendMonitorEntry(prev, entry))
+      setText('')
+      setError(null)
+    } catch (err) {
+      setError(`发送失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   async function resetBoard() {
@@ -151,8 +156,7 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
       <section className="card monitor-card">
         <aside className="monitor-side">
           <header className="card-head">
-            <h1>串口监视器</h1>
-            <p>收发日志 · 可改波特率与换行</p>
+            <h1>🖥️ 串口监视器</h1>
           </header>
 
           <PortPicker
@@ -185,7 +189,7 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
           </div>
 
           <label className="field">
-            <span className="label">波特率</span>
+            <span className="label">📡 波特率</span>
             <select
               className="select"
               value={baud}
@@ -230,8 +234,8 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
           </label>
 
           <div className="side-actions">
-            <button type="button" className="btn ghost" onClick={() => setLog('')}>
-              清屏
+            <button type="button" className="btn ghost" onClick={() => setLog([])}>
+              🧹 清屏
             </button>
           </div>
 
@@ -262,7 +266,15 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
 
         <div className="monitor-log-wrap">
           <pre className="monitor-log" ref={logBoxRef}>
-            {log ? log : <span className="log-placeholder">日志输出</span>}
+            {log.length > 0 ? (
+              log.map((entry) => (
+                <span className={`log-${entry.direction}`} key={entry.id}>
+                  {entry.text}
+                </span>
+              ))
+            ) : (
+              <span className="log-placeholder">日志输出</span>
+            )}
           </pre>
           {autoScroll && open ? <span className="stick-hint">已贴底</span> : null}
         </div>

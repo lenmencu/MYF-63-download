@@ -43,6 +43,7 @@ export class WebSerialPort {
   private signal: AbortSignal | null = null
   private currentBaud = 0
   private unbindAbort: (() => void) | null = null
+  private pumpError: Error | null = null
 
   constructor(port: SerialPort) {
     this.port = port
@@ -70,6 +71,7 @@ export class WebSerialPort {
 
   private ensureRunning(): void {
     if (this.signal?.aborted) throw new FlashCancelledError()
+    if (this.pumpError) throw this.pumpError
   }
 
   inWaiting(): number {
@@ -89,6 +91,7 @@ export class WebSerialPort {
     this.writer = this.port.writable.getWriter()
     this.openFlag = true
     this.currentBaud = baudRate
+    this.pumpError = null
     this.clearInput()
     this.pumping = true
     this.pumpTask = this.pump()
@@ -178,22 +181,24 @@ export class WebSerialPort {
     return got
   }
 
-  async holdRtsLow(): Promise<void> {
+  async holdRtsLow(): Promise<boolean> {
     try {
       await this.port.setSignals({ dataTerminalReady: false, requestToSend: false })
+      return true
     } catch {
-      /* some adapters reject signal changes */
+      return false
     }
   }
 
-  async pulseReset(): Promise<void> {
+  async pulseReset(): Promise<boolean> {
     try {
-      await this.port.setSignals({ dataTerminalReady: true, requestToSend: true })
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: true })
       await sleep(100)
       await this.port.setSignals({ dataTerminalReady: false, requestToSend: false })
       await sleep(50)
+      return true
     } catch {
-      /* ignore */
+      return false
     }
   }
 
@@ -249,9 +254,16 @@ export class WebSerialPort {
           this.notify()
         }
       }
-    } catch {
-      /* cancelled on close / baud switch */
+    } catch (err) {
+      if (this.pumping) {
+        this.pumpError = new SerialError(`串口读取失败：${err instanceof Error ? err.message : String(err)}`)
+        this.notify()
+      }
     } finally {
+      if (this.pumping && !this.pumpError) {
+        this.pumpError = new SerialError('串口设备已断开')
+        this.notify()
+      }
       try {
         this.reader.releaseLock()
       } catch {
@@ -309,6 +321,7 @@ function deviceName(vid: number, pid: number): string {
   const named: Record<string, string> = {
     '1a86:7523': 'CH340',
     '1a86:5523': 'CH341',
+    '1a86:55d2': 'CH342',
     '1a86:55d3': 'CH342',
     '1a86:55d4': 'CH342',
     '1a86:55da': 'CH343',

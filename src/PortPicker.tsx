@@ -23,7 +23,7 @@ export function PortPicker({ ports, selected, disabled, onSelect, onAdd, onRefre
 
   return (
     <div className="field">
-      <span className="label">选择串口</span>
+      <span className="label">🔌 选择串口</span>
       <div className="port-row">
         <select
           className="select port-select"
@@ -51,7 +51,6 @@ export function PortPicker({ ports, selected, disabled, onSelect, onAdd, onRefre
           添加串口
         </button>
       </div>
-      <p className="hint">点「添加串口」会列出本机可用串口。授权过的设备会留在下拉框里，可直接切换。</p>
     </div>
   )
 }

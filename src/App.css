@@ -44,8 +44,8 @@ select {
   align-items: center;
   gap: 32px;
   padding: 0 max(48px, calc((100% - 1080px) / 2));
-  border-bottom: 1px solid var(--line);
-  background: #f7f8fa;
+  border-bottom: 1px solid #cfdae2;
+  background: #e7eef3;
 }
 
 .brand {
@@ -125,26 +125,22 @@ select {
 }
 
 .flash-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(220px, 0.9fr);
-  gap: 28px;
-  align-items: start;
+  width: 100%;
 }
 
 .flash-card {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
   padding: 22px 24px 20px;
 }
 
-.art {
-  min-height: 220px;
+.flash-card-top {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.module-svg {
-  width: min(100%, 360px);
-  height: auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
 }
 
 .field {
@@ -161,7 +157,7 @@ select {
 
 .chip-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -312,6 +308,9 @@ select {
 }
 
 .flash-log {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
   min-height: 120px;
   max-height: 200px;
   overflow: auto;
@@ -328,7 +327,8 @@ select {
 .monitor-card {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
-  min-height: 520px;
+  height: clamp(520px, calc(100dvh - 164px), 760px);
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -398,19 +398,51 @@ select {
 
 .monitor-log-wrap {
   position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: var(--log);
 }
 
 .monitor-log {
   height: 100%;
-  min-height: 520px;
+  min-height: 0;
+  max-height: 100%;
   padding: 16px 18px 28px;
   color: #d7e0e6;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: #738796 #263038;
+}
+
+.monitor-log::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.monitor-log::-webkit-scrollbar-track {
+  background: #263038;
+}
+
+.monitor-log::-webkit-scrollbar-thumb {
+  border: 2px solid #263038;
+  border-radius: 999px;
+  background: #738796;
 }
 
 .log-placeholder {
   color: #8a969e;
+}
+
+.log-tx {
+  color: #9fe3c2;
+  font-weight: 700;
+  background: rgb(68 145 108 / 14%);
+}
+
+.log-rx {
+  color: #d7e0e6;
 }
 
 .stick-hint {
@@ -428,13 +460,13 @@ select {
     padding-right: 20px;
   }
 
-  .flash-split,
   .monitor-card {
     grid-template-columns: 1fr;
+    height: auto;
   }
 
-  .art {
-    display: none;
+  .monitor-log-wrap {
+    height: 420px;
   }
 
   .monitor-side {

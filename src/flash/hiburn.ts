@@ -2,9 +2,14 @@ import { crc16 } from './crc16.ts'
 import { flashImages, loaderboot, type Fwpkg, type FwpkgImage } from './fwpkg.ts'
 import { FlashCancelledError, sleep, type WebSerialPort } from '../serial/web-serial.ts'
 import { sendImage } from './ymodem.ts'
-import type { ChipFamily } from './chip.ts'
 
 export const BOOT_BAUD = 115200
+
+export function resolveWebFlashBaud(requestedBaud: number): { baud: number; adjusted: boolean } {
+  // Web Serial has no in-place baud-rate change. Closing and reopening CH340 after
+  // the ROM handshake drops the active download session, so keep it open end-to-end.
+  return { baud: BOOT_BAUD, adjusted: requestedBaud !== BOOT_BAUD }
+}
 const PACKET_MAGIC = 0xdeadbeef
 const ACK_TYPE = 0xe1
 const ACK_SUCCESS = 0x5a
@@ -13,12 +18,21 @@ const CMD_DL_IMAGE = 0xd2
 const CMD_RESET = 0x87
 const ERASE_ALIGN = 0x2000
 const FLOW_NONE = 0
-const ACK_PREFIX = new Uint8Array([0xef, 0xbe, 0xad, 0xde, 0x0c, 0x00, ACK_TYPE, 0x1e])
+const FRAME_MAGIC = new Uint8Array([0xef, 0xbe, 0xad, 0xde])
 
 export class HistoolError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'HistoolError'
+  }
+}
+
+export class FlashVerificationError extends HistoolError {
+  readonly writeCompleted = true
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'FlashVerificationError'
   }
 }
 
@@ -29,11 +43,16 @@ export type FlashProgress = {
 
 export type FlashOptions = {
   baud: number
-  family?: ChipFamily
   connectTimeoutMs?: number
+  bootVerifyTimeoutMs?: number
   signal?: AbortSignal
   onLog?: (line: string) => void
   onProgress?: (info: FlashProgress) => void
+}
+
+export type FlashResult = {
+  bootLog: string
+  bootVerified: true
 }
 
 function throwIfAborted(signal?: AbortSignal | null): void {
@@ -57,6 +76,12 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return out
 }
 
+function copyBytes(bytes: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(bytes.length)
+  copy.set(bytes)
+  return copy
+}
+
 function indexOf(hay: Uint8Array, needle: Uint8Array): number {
   if (needle.length > hay.length) return -1
   outer: for (let i = 0; i <= hay.length - needle.length; i++) {
@@ -68,19 +93,7 @@ function indexOf(hay: Uint8Array, needle: Uint8Array): number {
   return -1
 }
 
-function leftoverAfterAck(acc: Uint8Array): Uint8Array {
-  const idx = indexOf(acc, ACK_PREFIX)
-  if (idx < 0) return new Uint8Array(0)
-  const frameLen = acc[idx + 4]! | (acc[idx + 5]! << 8)
-  const end = idx + (frameLen >= 10 && frameLen <= 1036 ? frameLen : ACK_PREFIX.length)
-  if (end >= acc.length) return new Uint8Array(0)
-  const rest = acc.subarray(end)
-  const out = new Uint8Array(rest.length)
-  out.set(rest)
-  return out
-}
-
-function buildFrame(cmd: number, payload: Uint8Array): Uint8Array {
+export function buildFrame(cmd: number, payload: Uint8Array): Uint8Array {
   const packetSize = 8 + payload.length + 2
   const head = new Uint8Array(8)
   const view = new DataView(head.buffer)
@@ -95,16 +108,18 @@ function buildFrame(cmd: number, payload: Uint8Array): Uint8Array {
   return concat(body, tail)
 }
 
-function parseFrame(buf: Uint8Array): { cmd: number; payload: Uint8Array } {
+export function parseFrame(buf: Uint8Array): { cmd: number; payload: Uint8Array } {
   if (buf.length < 10) throw new HistoolError('HiBurn 帧过短')
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   const magic = view.getUint32(0, true)
   const packetSize = view.getUint16(4, true)
   const cmd = buf[6]!
+  const cmdInverse = buf[7]!
   if (magic !== PACKET_MAGIC) throw new HistoolError(`坏魔数 0x${magic.toString(16)}`)
-  if (packetSize > buf.length || packetSize < 10) {
+  if (packetSize !== buf.length || packetSize < 10) {
     throw new HistoolError(`坏 packet_size ${packetSize}`)
   }
+  if (cmdInverse !== ((cmd ^ 0xff) & 0xff)) throw new HistoolError('HiBurn 命令反码不匹配')
   const payload = buf.subarray(8, packetSize - 2)
   const csum = view.getUint16(packetSize - 2, true)
   const calc = crc16(buf.subarray(0, packetSize - 2))
@@ -112,6 +127,31 @@ function parseFrame(buf: Uint8Array): { cmd: number; payload: Uint8Array } {
     throw new HistoolError(`帧 CRC 不匹配 0x${csum.toString(16)} != 0x${calc.toString(16)}`)
   }
   return { cmd, payload }
+}
+
+function magicSuffix(bytes: Uint8Array): Uint8Array {
+  const max = Math.min(FRAME_MAGIC.length - 1, bytes.length)
+  for (let length = max; length > 0; length--) {
+    const suffix = bytes.subarray(bytes.length - length)
+    if (suffix.every((value, index) => value === FRAME_MAGIC[index])) return copyBytes(suffix)
+  }
+  return new Uint8Array(0)
+}
+
+export function extractFirstFrame(bytes: Uint8Array): { frame: Uint8Array | null; rest: Uint8Array } {
+  const start = indexOf(bytes, FRAME_MAGIC)
+  if (start < 0) return { frame: null, rest: magicSuffix(bytes) }
+  const candidate = bytes.subarray(start)
+  if (candidate.length < 6) return { frame: null, rest: copyBytes(candidate) }
+  const frameLength = candidate[4]! | (candidate[5]! << 8)
+  if (frameLength < 10 || frameLength > 1036) {
+    return extractFirstFrame(candidate.subarray(1))
+  }
+  if (candidate.length < frameLength) return { frame: null, rest: copyBytes(candidate) }
+  return {
+    frame: copyBytes(candidate.subarray(0, frameLength)),
+    rest: copyBytes(candidate.subarray(frameLength)),
+  }
 }
 
 function alignErase(length: number): number {
@@ -124,7 +164,7 @@ async function sendCmd(ser: WebSerialPort, cmd: number, payload: Uint8Array): Pr
 }
 
 async function readFrame(ser: WebSerialPort, timeoutMs: number): Promise<{ cmd: number; payload: Uint8Array }> {
-  const magic = new Uint8Array([0xef, 0xbe, 0xad, 0xde])
+  const magic = FRAME_MAGIC
   const buf: number[] = []
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
@@ -159,10 +199,26 @@ async function readFrame(ser: WebSerialPort, timeoutMs: number): Promise<{ cmd: 
 async function waitAck(ser: WebSerialPort, timeoutMs: number): Promise<Uint8Array> {
   const { cmd, payload } = await readFrame(ser, timeoutMs)
   if (cmd !== ACK_TYPE) throw new HistoolError(`期望 ACK，收到 cmd 0x${cmd.toString(16)}`)
-  if (payload.length > 0 && payload[0] !== ACK_SUCCESS && payload[0] !== 0x00) {
-    if (payload[0] === 0xa5) throw new HistoolError('设备 NACK (0xA5)')
-  }
+  validateAckPayload(payload)
   return payload
+}
+
+export async function acceptOptionalLoaderAck(waitForAck: () => Promise<void>): Promise<boolean> {
+  try {
+    await waitForAck()
+    return true
+  } catch (err) {
+    if (err instanceof HistoolError) return false
+    throw err
+  }
+}
+
+function validateAckPayload(payload: Uint8Array): void {
+  if (payload.length === 0) throw new HistoolError('设备 ACK 缺少状态码')
+  if (payload[0] === 0xa5) throw new HistoolError('设备 NACK (0xA5)')
+  if (payload[0] !== ACK_SUCCESS && payload[0] !== 0x00) {
+    throw new HistoolError(`设备返回未知状态 0x${payload[0]!.toString(16).padStart(2, '0')}`)
+  }
 }
 
 async function handshake(
@@ -170,7 +226,6 @@ async function handshake(
   baud: number,
   connectTimeoutMs: number,
   onLog: (line: string) => void,
-  family: ChipFamily,
   signal?: AbortSignal,
 ): Promise<void> {
   await ser.open(BOOT_BAUD)
@@ -179,7 +234,7 @@ async function handshake(
   const deadline = performance.now() + connectTimeoutMs
 
   const tryWindow = async (windowMs: number): Promise<Uint8Array | null> => {
-    let acc = new Uint8Array(0)
+    let acc: Uint8Array = new Uint8Array(0)
     const end = performance.now() + windowMs
     while (performance.now() < end && performance.now() < deadline) {
       throwIfAborted(signal)
@@ -191,7 +246,21 @@ async function handshake(
       next.set(acc)
       next.set(chunk, acc.length)
       acc = next
-      if (indexOf(acc, ACK_PREFIX) >= 0) return leftoverAfterAck(acc)
+      while (acc.length > 0) {
+        const extracted = extractFirstFrame(acc)
+        acc = extracted.rest
+        if (!extracted.frame) break
+        let frame: { cmd: number; payload: Uint8Array }
+        try {
+          frame = parseFrame(extracted.frame)
+        } catch (err) {
+          onLog(`忽略损坏的握手响应：${err instanceof Error ? err.message : err}`)
+          continue
+        }
+        if (frame.cmd !== ACK_TYPE) continue
+        validateAckPayload(frame.payload)
+        return acc
+      }
       if (acc.length > 4096) {
         const keep = acc.subarray(acc.length - 64)
         const trimmed = new Uint8Array(keep.length)
@@ -216,27 +285,13 @@ async function handshake(
     ser.clearInput()
   }
 
-  if (family === 'bs2x') {
-    onLog('F20/BS2X：先不拉 RTS，避免双串口板掉线...')
-    const rest = await tryWindow(3000)
-    if (rest) {
-      await onHandshakeOk(rest)
-      return
-    }
-    onLog('未进下载模式，改为 RTS 复位；也可手动按复位键')
+  onLog('请现在按一下开发板复位键，页面会自动继续')
+  const rest = await tryWindow(connectTimeoutMs)
+  if (rest) {
+    await onHandshakeOk(rest)
+    return
   }
-
-  while (performance.now() < deadline) {
-    throwIfAborted(signal)
-    await ser.pulseReset()
-    ser.clearInput()
-    const rest = await tryWindow(2000)
-    if (rest) {
-      await onHandshakeOk(rest)
-      return
-    }
-  }
-  throw new HistoolError('握手超时：请在烧录时按一下模组复位键后重试')
+  throw new HistoolError('握手超时：没有检测到手动复位后的 ROM 响应')
 }
 
 async function loadLoaderboot(
@@ -248,12 +303,10 @@ async function loadLoaderboot(
 ): Promise<void> {
   onLog(`Ymodem 下装 loaderboot ${image.name} (${image.length} 字节)...`)
   await sendImage(ser, image, onYmodem, signal)
-  try {
+  const acknowledged = await acceptOptionalLoaderAck(async () => {
     await waitAck(ser, 10_000)
-  } catch (err) {
-    onLog(`loaderboot 后无 ACK（${err instanceof Error ? err.message : err}），继续`)
-  }
-  onLog('loaderboot 已运行')
+  })
+  onLog(acknowledged ? 'loaderboot 已确认运行' : 'loaderboot 未返回附加 ACK，按兼容模式继续')
   await sleep(200, signal)
 }
 
@@ -285,40 +338,80 @@ async function downloadImage(
     onLog(`擦除 ACK 后缓冲还有 ${pending} 字节，留给 Ymodem`)
   }
   await sendImage(ser, image, onYmodem, signal)
-  try {
-    await waitAck(ser, 8000)
-  } catch {
-    /* histool also ignores missing ACK here */
-  }
+  onLog(`${image.name} 的 Ymodem 传输已由设备确认`)
   await sleep(100, signal)
 }
 
-async function resetChip(ser: WebSerialPort, onLog: (line: string) => void): Promise<void> {
-  onLog('复位（协议 + RTS）')
+function hasBootEvidence(bytes: Uint8Array): boolean {
+  if (bytes.length < 4) return false
+  let printable = 0
+  for (const byte of bytes) {
+    if (byte === 0x0a || byte === 0x0d || byte === 0x09 || (byte >= 0x20 && byte <= 0x7e)) printable += 1
+  }
+  return printable >= 4 && printable / bytes.length >= 0.5
+}
+
+async function collectBootLog(
+  ser: WebSerialPort,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const chunks: Uint8Array[] = []
+  let size = 0
+  const deadline = performance.now() + timeoutMs
+  while (performance.now() < deadline) {
+    throwIfAborted(signal)
+    const pending = ser.inWaiting()
+    const next = pending > 0 ? ser.readAvailable() : await ser.read(1, Math.min(150, deadline - performance.now()))
+    if (next.length === 0) continue
+    chunks.push(next)
+    size += next.length
+    const bytes = concat(...chunks)
+    if (hasBootEvidence(bytes) && (bytes.includes(0x0a) || size >= 32)) {
+      return new TextDecoder().decode(bytes).replaceAll('\0', '')
+    }
+    if (size >= 8192) break
+  }
+  const bytes = concat(...chunks)
+  if (hasBootEvidence(bytes)) return new TextDecoder().decode(bytes).replaceAll('\0', '')
+  throw new FlashVerificationError('镜像已经写入，但没有检测到有效启动日志；请检查日志串口或手动复位')
+}
+
+async function resetAndVerify(
+  ser: WebSerialPort,
+  timeoutMs: number,
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  onLog('镜像写入完成，发送协议复位')
   try {
     await sendCmd(ser, CMD_RESET, new Uint8Array([0x00, 0x00]))
     try {
-      await waitAck(ser, 3000)
+      await waitAck(ser, 1000)
     } catch {
-      /* ignore */
+      /* Some loader versions reset before their ACK reaches the host. */
     }
   } catch (err) {
-    onLog(`协议复位失败（${err instanceof Error ? err.message : err}），改用 RTS`)
+    onLog(`协议复位未确认：${err instanceof Error ? err.message : err}`)
   }
-  try {
-    await ser.pulseReset()
-  } catch {
-    /* ignore */
-  }
+
+  await ser.setBaudRate(BOOT_BAUD)
+  ser.clearInput()
+  onLog('正在检查 115200 baud 启动日志；若无输出，请再按一下开发板复位键')
+  return collectBootLog(ser, timeoutMs, signal)
 }
 
 export async function flashFwpkg(
   ser: WebSerialPort,
   pkg: Fwpkg,
   options: FlashOptions,
-): Promise<void> {
+): Promise<FlashResult> {
   const onLog = options.onLog ?? (() => undefined)
   const onProgress = options.onProgress ?? (() => undefined)
+  const webBaud = resolveWebFlashBaud(options.baud)
+  if (webBaud.adjusted) {
+    onLog(`浏览器稳定模式：${options.baud} baud 需要重开串口，已改用 ${webBaud.baud} baud 保持下载会话`)
+  }
   const loader = loaderboot(pkg)
   if (!loader) throw new HistoolError('fwpkg 中没有 loaderboot（type 0）')
   const images = flashImages(pkg)
@@ -337,10 +430,9 @@ export async function flashFwpkg(
   throwIfAborted(options.signal)
   await handshake(
     ser,
-    options.baud,
-    options.connectTimeoutMs ?? 15_000,
+    webBaud.baud,
+    options.connectTimeoutMs ?? 30_000,
     onLog,
-    options.family ?? 'ws63',
     options.signal,
   )
 
@@ -361,7 +453,23 @@ export async function flashFwpkg(
     doneWeight += img.length
   }
 
-  await resetChip(ser, onLog)
+  onProgress({ stage: '验证启动', percent: 99 })
+  let bootLog: string
+  try {
+    bootLog = await resetAndVerify(
+      ser,
+      options.bootVerifyTimeoutMs ?? 15_000,
+      onLog,
+      options.signal,
+    )
+  } catch (err) {
+    if (err instanceof FlashCancelledError || err instanceof FlashVerificationError) throw err
+    throw new FlashVerificationError(
+      `镜像已经写入，但启动验证失败：${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  onLog(`已检测到启动日志：${bootLog.trim().slice(0, 160)}`)
   onProgress({ stage: '完成', percent: 100 })
-  onLog('烧录完成')
+  onLog('烧录与启动验证完成')
+  return { bootLog, bootVerified: true }
 }
