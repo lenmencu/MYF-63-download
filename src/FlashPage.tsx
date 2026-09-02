@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CHIPS, type ChipId } from './flash/chip.ts'
+import { CHIPS, DOWNLOAD_BAUD_OPTIONS, type ChipId } from './flash/chip.ts'
 import { formatSize, parseFwpkg, validateFwpkgForChip, type Fwpkg } from './flash/fwpkg.ts'
-import { BOOT_BAUD, FlashVerificationError, flashFwpkg } from './flash/hiburn.ts'
+import { FlashVerificationError, flashFwpkg } from './flash/hiburn.ts'
 import { PortPicker } from './PortPicker.tsx'
 import { FlashCancelledError, hasWebSerial, portLabel, WebSerialPort } from './serial/web-serial.ts'
 import { beginFlashLog } from './ui/flash-log.ts'
@@ -22,6 +22,7 @@ function nowStamp(): string {
 
 export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts, onBusy }: Props) {
   const [chip, setChip] = useState<ChipId>('ws63')
+  const [downloadBaud, setDownloadBaud] = useState(CHIPS[0]!.baud)
   const [fileName, setFileName] = useState<string | null>(null)
   const [pkg, setPkg] = useState<Fwpkg | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
@@ -79,13 +80,13 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
     onBusy(true)
     setPercent(0)
     setStage('开始')
-    setLogs(beginFlashLog(nowStamp(), profile.label, BOOT_BAUD))
+    setLogs(beginFlashLog(nowStamp(), profile.label, downloadBaud))
     const io = new WebSerialPort(port)
     io.bindAbort(ac.signal)
     ioRef.current = io
     try {
       await flashFwpkg(io, pkg, {
-        baud: BOOT_BAUD,
+        baud: downloadBaud,
         connectTimeoutMs: profile.connectTimeoutMs,
         signal: ac.signal,
         onLog: log,
@@ -144,12 +145,33 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
                   type="button"
                   className={item.id === chip ? 'chip-btn on' : 'chip-btn'}
                   disabled={flashing}
-                  onClick={() => setChip(item.id)}
+                  onClick={() => {
+                    setChip(item.id)
+                    setDownloadBaud(item.baud)
+                  }}
                 >
                   <strong>{item.label}</strong>
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="field">
+            <label className="label" htmlFor="download-baud">下载波特率</label>
+            <select
+              id="download-baud"
+              className="select"
+              value={downloadBaud}
+              disabled={flashing}
+              onChange={(event) => setDownloadBaud(Number(event.target.value))}
+            >
+              {DOWNLOAD_BAUD_OPTIONS.map((baud) => (
+                <option value={baud} key={baud}>
+                  {baud.toLocaleString('zh-CN')} baud{baud === profile.baud ? '（推荐）' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="hint">ROM 握手和 loaderboot 固定使用 115,200，Flash 写入使用这里选择的速率。</p>
           </div>
 
           <div className="field">
@@ -229,7 +251,7 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
             <div className="bar-fill" style={{ width: `${percent}%` }} />
           </div>
           <p className="hint">
-            握手 115200 → 保持串口连接 → Ymodem 写区 → 复位并验证启动日志
+            握手与 loaderboot 115200 → 切换至 {downloadBaud.toLocaleString('zh-CN')} → Ymodem 写区 → 复位并验证启动日志
           </p>
           {!hasWebSerial() ? (
             <p className="error-text">当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge，并在 localhost 或 HTTPS 下打开。</p>

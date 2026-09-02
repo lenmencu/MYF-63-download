@@ -4,16 +4,11 @@ import { FlashCancelledError, sleep, type WebSerialPort } from '../serial/web-se
 import { sendImage } from './ymodem.ts'
 
 export const BOOT_BAUD = 115200
-
-export function resolveWebFlashBaud(requestedBaud: number): { baud: number; adjusted: boolean } {
-  // Web Serial has no in-place baud-rate change. Closing and reopening CH340 after
-  // the ROM handshake drops the active download session, so keep it open end-to-end.
-  return { baud: BOOT_BAUD, adjusted: requestedBaud !== BOOT_BAUD }
-}
 const PACKET_MAGIC = 0xdeadbeef
 const ACK_TYPE = 0xe1
 const ACK_SUCCESS = 0x5a
 const CMD_HANDSHAKE = 0xf0
+const CMD_SET_BAUDRATE = 0x5a
 const CMD_DL_IMAGE = 0xd2
 const CMD_RESET = 0x87
 const ERASE_ALIGN = 0x2000
@@ -74,6 +69,23 @@ function concat(...parts: Uint8Array[]): Uint8Array {
     o += p.length
   }
   return out
+}
+
+export function buildBaudratePayload(baud: number): Uint8Array {
+  return concat(u32le(baud), new Uint8Array([0x08, 0x01, 0x00, FLOW_NONE]))
+}
+
+export async function applyLoaderBaud(
+  baud: number,
+  sendBaudCommand: (payload: Uint8Array) => Promise<void>,
+  waitForAck: () => Promise<void>,
+  reopenSerial: (baud: number) => Promise<void>,
+): Promise<boolean> {
+  if (baud === BOOT_BAUD) return false
+  await sendBaudCommand(buildBaudratePayload(baud))
+  await waitForAck()
+  await reopenSerial(baud)
+  return true
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -223,14 +235,13 @@ function validateAckPayload(payload: Uint8Array): void {
 
 async function handshake(
   ser: WebSerialPort,
-  baud: number,
   connectTimeoutMs: number,
   onLog: (line: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   await ser.open(BOOT_BAUD)
-  const payload = concat(u32le(baud), new Uint8Array([0x08, 0x01, 0x00, FLOW_NONE]))
-  onLog(`等待 ROM 下载（超时 ${(connectTimeoutMs / 1000).toFixed(0)}s，目标 ${baud} baud）...`)
+  const payload = buildBaudratePayload(BOOT_BAUD)
+  onLog(`等待 ROM 下载（超时 ${(connectTimeoutMs / 1000).toFixed(0)}s，固定 ${BOOT_BAUD} baud）...`)
   const deadline = performance.now() + connectTimeoutMs
 
   const tryWindow = async (windowMs: number): Promise<Uint8Array | null> => {
@@ -273,16 +284,8 @@ async function handshake(
 
   const onHandshakeOk = async (rest: Uint8Array) => {
     if (rest.length > 0) ser.unread(rest)
-    if (ser.baudRate === baud) {
-      onLog('握手成功，保持当前波特率（不重开串口）')
-      await ser.holdRtsLow()
-      return
-    }
-    onLog(`握手成功，切换到 ${baud} baud（网页需重开串口）`)
-    await ser.setBaudRate(baud)
+    onLog(`握手成功，保持 ${BOOT_BAUD} baud 下装 loaderboot`)
     await ser.holdRtsLow()
-    await sleep(300, signal)
-    ser.clearInput()
   }
 
   onLog('请现在按一下开发板复位键，页面会自动继续')
@@ -292,6 +295,42 @@ async function handshake(
     return
   }
   throw new HistoolError('握手超时：没有检测到手动复位后的 ROM 响应')
+}
+
+async function switchLoaderBaud(
+  ser: WebSerialPort,
+  baud: number,
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (baud === BOOT_BAUD) {
+    onLog(`Flash 下载保持 ${BOOT_BAUD} baud`)
+    return
+  }
+  throwIfAborted(signal)
+  ser.clearInput()
+  onLog(`请求 loaderboot 切换 Flash 下载速率至 ${baud} baud...`)
+  try {
+    await applyLoaderBaud(
+      baud,
+      async (payload) => sendCmd(ser, CMD_SET_BAUDRATE, payload),
+      async () => {
+        await waitAck(ser, 3000)
+      },
+      async (nextBaud) => {
+        await sleep(50, signal)
+        await ser.setBaudRate(nextBaud)
+      },
+    )
+  } catch (err) {
+    throw new HistoolError(
+      `下载波特率切换失败（${baud} baud）：${err instanceof Error ? err.message : String(err)}；请复位后选择 115200 重试`,
+    )
+  }
+  await ser.holdRtsLow()
+  await sleep(100, signal)
+  ser.clearInput()
+  onLog(`下载波特率已切换为 ${baud} baud`)
 }
 
 async function loadLoaderboot(
@@ -408,10 +447,6 @@ export async function flashFwpkg(
 ): Promise<FlashResult> {
   const onLog = options.onLog ?? (() => undefined)
   const onProgress = options.onProgress ?? (() => undefined)
-  const webBaud = resolveWebFlashBaud(options.baud)
-  if (webBaud.adjusted) {
-    onLog(`浏览器稳定模式：${options.baud} baud 需要重开串口，已改用 ${webBaud.baud} baud 保持下载会话`)
-  }
   const loader = loaderboot(pkg)
   if (!loader) throw new HistoolError('fwpkg 中没有 loaderboot（type 0）')
   const images = flashImages(pkg)
@@ -430,7 +465,6 @@ export async function flashFwpkg(
   throwIfAborted(options.signal)
   await handshake(
     ser,
-    webBaud.baud,
     options.connectTimeoutMs ?? 30_000,
     onLog,
     options.signal,
@@ -442,6 +476,9 @@ export async function flashFwpkg(
     report('下装 loaderboot', extra)
   }, options.signal)
   doneWeight += loader.length
+
+  onProgress({ stage: '切换下载速率', percent: Math.max(4, Math.round((doneWeight / totalWeight) * 95) + 3) })
+  await switchLoaderBaud(ser, options.baud, onLog, options.signal)
 
   for (const img of images) {
     throwIfAborted(options.signal)

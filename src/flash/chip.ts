@@ -44,6 +44,10 @@ export const AVAIL_BAUD = [
   115200, 230400, 460800, 500000, 576000, 921600, 1000000, 1152000, 1500000, 2000000,
 ] as const
 
+export const DOWNLOAD_BAUD_OPTIONS = [
+  115200, 460800, 500000, 921600, 1000000, 1500000, 2000000,
+] as const
+
 export function chipProfile(id: ChipId): ChipProfile {
   const profile = CHIPS.find((item) => item.id === id)
   if (!profile) throw new Error(`未知芯片 ${id}`)

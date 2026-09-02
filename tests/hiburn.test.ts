@@ -2,18 +2,49 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   acceptOptionalLoaderAck,
+  applyLoaderBaud,
   BOOT_BAUD,
+  buildBaudratePayload,
   buildFrame,
   extractFirstFrame,
   HistoolError,
   parseFrame,
-  resolveWebFlashBaud,
 } from '../src/flash/hiburn.ts'
 
-test('browser flashing keeps the ROM session open at its boot baud', () => {
-  assert.deepEqual(resolveWebFlashBaud(BOOT_BAUD), { baud: BOOT_BAUD, adjusted: false })
-  assert.deepEqual(resolveWebFlashBaud(2_000_000), { baud: BOOT_BAUD, adjusted: true })
-  assert.deepEqual(resolveWebFlashBaud(500_000), { baud: BOOT_BAUD, adjusted: true })
+test('loader baud payload uses the HiBurn 0x5A layout', () => {
+  assert.deepEqual(buildBaudratePayload(2_000_000), new Uint8Array([0x80, 0x84, 0x1e, 0x00, 0x08, 0x01, 0x00, 0x00]))
+})
+
+test('loader baud command is acknowledged before reopening the browser serial port', async () => {
+  const events: string[] = []
+  const changed = await applyLoaderBaud(
+    500_000,
+    async (payload) => {
+      events.push(`command:${new DataView(payload.buffer, payload.byteOffset).getUint32(0, true)}`)
+    },
+    async () => {
+      events.push('ack')
+    },
+    async (baud) => {
+      events.push(`reopen:${baud}`)
+    },
+  )
+
+  assert.equal(changed, true)
+  assert.deepEqual(events, ['command:500000', 'ack', 'reopen:500000'])
+})
+
+test('115200 download skips loader baud command and serial reopen', async () => {
+  const events: string[] = []
+  const changed = await applyLoaderBaud(
+    BOOT_BAUD,
+    async () => { events.push('command') },
+    async () => { events.push('ack') },
+    async () => { events.push('reopen') },
+  )
+
+  assert.equal(changed, false)
+  assert.deepEqual(events, [])
 })
 
 test('HiBurn frame round-trips with command inverse and CRC validation', () => {
