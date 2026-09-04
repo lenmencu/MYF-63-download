@@ -80,13 +80,15 @@ export function buildBaudratePayload(baud: number): Uint8Array {
 export async function applyLoaderBaud(
   baud: number,
   sendBaudCommand: (payload: Uint8Array) => Promise<void>,
-  waitForAck: () => Promise<void>,
+  waitForOldBaudAck: () => Promise<void>,
   reopenSerial: (baud: number) => Promise<void>,
+  waitForNewBaudAck: () => Promise<void>,
 ): Promise<boolean> {
   if (baud === BOOT_BAUD) return false
   await sendBaudCommand(buildBaudratePayload(baud))
-  await waitForAck()
+  await waitForOldBaudAck()
   await reopenSerial(baud)
+  await waitForNewBaudAck()
   return true
 }
 
@@ -329,8 +331,10 @@ async function switchLoaderBaud(
         await waitAck(ser, 3000)
       },
       async (nextBaud) => {
-        await sleep(50, signal)
         await ser.setBaudRate(nextBaud)
+      },
+      async () => {
+        await waitAck(ser, 3000)
       },
     )
   } catch (err) {
@@ -338,10 +342,7 @@ async function switchLoaderBaud(
       `下载波特率切换失败（${baud} baud）：${err instanceof Error ? err.message : String(err)}；请复位后选择 115200 重试`,
     )
   }
-  await ser.holdRtsLow()
-  await sleep(100, signal)
-  ser.clearInput()
-  onLog(`下载波特率已切换为 ${baud} baud`)
+  onLog(`已在 ${baud} baud 收到 loaderboot 确认，开始写入 Flash`)
 }
 
 async function loadLoaderboot(

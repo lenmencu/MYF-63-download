@@ -16,7 +16,7 @@ test('loader baud payload uses the HiBurn 0x5A layout', () => {
   assert.deepEqual(buildBaudratePayload(2_000_000), new Uint8Array([0x80, 0x84, 0x1e, 0x00, 0x08, 0x01, 0x00, 0x00]))
 })
 
-test('loader baud command is acknowledged before reopening the browser serial port', async () => {
+test('loader baud switch waits for acknowledgements on both sides of serial reopen', async () => {
   const events: string[] = []
   const changed = await applyLoaderBaud(
     500_000,
@@ -24,15 +24,18 @@ test('loader baud command is acknowledged before reopening the browser serial po
       events.push(`command:${new DataView(payload.buffer, payload.byteOffset).getUint32(0, true)}`)
     },
     async () => {
-      events.push('ack')
+      events.push('ack:old-baud')
     },
     async (baud) => {
       events.push(`reopen:${baud}`)
     },
+    async () => {
+      events.push('ack:new-baud')
+    },
   )
 
   assert.equal(changed, true)
-  assert.deepEqual(events, ['command:500000', 'ack', 'reopen:500000'])
+  assert.deepEqual(events, ['command:500000', 'ack:old-baud', 'reopen:500000', 'ack:new-baud'])
 })
 
 test('115200 download skips loader baud command and serial reopen', async () => {
@@ -42,6 +45,7 @@ test('115200 download skips loader baud command and serial reopen', async () => 
     async () => { events.push('command') },
     async () => { events.push('ack') },
     async () => { events.push('reopen') },
+    async () => { events.push('second-ack') },
   )
 
   assert.equal(changed, false)
