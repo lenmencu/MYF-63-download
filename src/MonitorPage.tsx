@@ -138,7 +138,6 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
         text: `\n[${stamp()}]  TX › ${command}${ending}\n`,
       }
       setLog((prev) => appendMonitorEntry(prev, entry))
-      setText('')
       setError(null)
     } catch (err) {
       setError(`发送失败：${err instanceof Error ? err.message : String(err)}`)
@@ -156,7 +155,9 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
       <section className="card monitor-card">
         <aside className="monitor-side">
           <header className="card-head">
-            <h1>🖥️ 串口监视器</h1>
+            <span className="eyebrow">SERIAL CONTROL / 02</span>
+            <h1>SERIAL <em>MONITOR</em></h1>
+            <p>实时读取、发送与诊断设备串口数据。</p>
           </header>
 
           <PortPicker
@@ -265,6 +266,10 @@ export function MonitorPage({ ports, port, onSelectPort, onAddPort, onRefreshPor
         </aside>
 
         <div className="monitor-log-wrap">
+          <header className="terminal-head">
+            <span>LIVE TERMINAL</span>
+            <span className={open ? 'terminal-state on' : 'terminal-state'}>{open ? 'CONNECTED' : 'STANDBY'}</span>
+          </header>
           <pre className="monitor-log" ref={logBoxRef}>
             {log.length > 0 ? (
               log.map((entry) => (

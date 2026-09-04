@@ -23,7 +23,7 @@ export function PortPicker({ ports, selected, disabled, onSelect, onAdd, onRefre
 
   return (
     <div className="field">
-      <span className="label">🔌 选择串口</span>
+      <span className="label">选择串口 / SERIAL PORT</span>
       <div className="port-row">
         <select
           className="select port-select"

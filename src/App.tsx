@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { FlashPage } from './FlashPage.tsx'
 import { MonitorPage } from './MonitorPage.tsx'
 import { hasWebSerial, listSerialPorts, serialEventPort } from './serial/web-serial.ts'
+import brandLogo from './assets/mingyufeng-logo.png'
 import './App.css'
 
 type Page = 'flash' | 'monitor'
@@ -58,17 +59,18 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" />
-          明裕丰 MYF
+          <img src={brandLogo} alt="明裕丰 MINGYUFENG" />
+          <span className="brand-divider" aria-hidden="true" />
+          <span className="brand-product">DEVICE WORKBENCH</span>
         </div>
-        <nav>
+        <nav aria-label="主导航">
           <button
             type="button"
             className={page === 'flash' ? 'nav on' : 'nav'}
             disabled={busy}
             onClick={() => setPage('flash')}
           >
-            在线烧录
+            <span>01</span> 在线烧录
           </button>
           <button
             type="button"
@@ -76,10 +78,10 @@ export default function App() {
             disabled={busy}
             onClick={() => setPage('monitor')}
           >
-            串口监视器
+            <span>02</span> 串口监视器
           </button>
         </nav>
-        <span className="badge">Chrome / Edge</span>
+        <span className="badge"><i /> SYSTEM READY</span>
       </header>
 
       <main className="shell">

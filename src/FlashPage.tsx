@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CHIPS, DOWNLOAD_BAUD_OPTIONS, type ChipId } from './flash/chip.ts'
+import { CHIPS, type ChipId } from './flash/chip.ts'
 import { formatSize, parseFwpkg, validateFwpkgForChip, type Fwpkg } from './flash/fwpkg.ts'
 import { FlashVerificationError, flashFwpkg } from './flash/hiburn.ts'
 import { PortPicker } from './PortPicker.tsx'
 import { FlashCancelledError, hasWebSerial, portLabel, WebSerialPort } from './serial/web-serial.ts'
-import { beginFlashLog } from './ui/flash-log.ts'
+import { beginFlashLog, classifyFlashLog } from './ui/flash-log.ts'
 
 type Props = {
   ports: SerialPort[]
@@ -15,6 +15,8 @@ type Props = {
   onBusy: (busy: boolean) => void
 }
 
+const FIXED_DOWNLOAD_BAUD = 115200
+
 function nowStamp(): string {
   const d = new Date()
   return d.toLocaleTimeString('zh-CN', { hour12: false })
@@ -22,7 +24,6 @@ function nowStamp(): string {
 
 export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts, onBusy }: Props) {
   const [chip, setChip] = useState<ChipId>('ws63')
-  const [downloadBaud, setDownloadBaud] = useState(CHIPS[0]!.baud)
   const [fileName, setFileName] = useState<string | null>(null)
   const [pkg, setPkg] = useState<Fwpkg | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
@@ -80,13 +81,13 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
     onBusy(true)
     setPercent(0)
     setStage('开始')
-    setLogs(beginFlashLog(nowStamp(), profile.label, downloadBaud))
+    setLogs(beginFlashLog(nowStamp(), profile.label, FIXED_DOWNLOAD_BAUD))
     const io = new WebSerialPort(port)
     io.bindAbort(ac.signal)
     ioRef.current = io
     try {
       await flashFwpkg(io, pkg, {
-        baud: downloadBaud,
+        baud: FIXED_DOWNLOAD_BAUD,
         connectTimeoutMs: profile.connectTimeoutMs,
         signal: ac.signal,
         onLog: log,
@@ -131,13 +132,15 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
         <section className="card flash-card">
           <div className="flash-card-top">
             <header className="card-head">
-              <h1>在线烧录</h1>
-              <p>本地选择 .fwpkg，浏览器完成写入</p>
+              <span className="eyebrow">FIRMWARE CONTROL / 01</span>
+              <h1>FLASH <em>FIRMWARE</em></h1>
+              <p>固件只在本地解析，通过浏览器安全写入设备。</p>
             </header>
+            <span className="card-code">RZB—FW.01</span>
           </div>
 
           <div className="field">
-            <span className="label">选择芯片</span>
+            <span className="label"><b>01</b> 选择芯片 / TARGET</span>
             <div className="chip-row">
               {CHIPS.map((item) => (
                 <button
@@ -147,7 +150,6 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
                   disabled={flashing}
                   onClick={() => {
                     setChip(item.id)
-                    setDownloadBaud(item.baud)
                   }}
                 >
                   <strong>{item.label}</strong>
@@ -157,25 +159,7 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
           </div>
 
           <div className="field">
-            <label className="label" htmlFor="download-baud">下载波特率</label>
-            <select
-              id="download-baud"
-              className="select"
-              value={downloadBaud}
-              disabled={flashing}
-              onChange={(event) => setDownloadBaud(Number(event.target.value))}
-            >
-              {DOWNLOAD_BAUD_OPTIONS.map((baud) => (
-                <option value={baud} key={baud}>
-                  {baud.toLocaleString('zh-CN')} baud{baud === profile.baud ? '（推荐）' : ''}
-                </option>
-              ))}
-            </select>
-            <p className="hint">ROM 握手和 loaderboot 固定使用 115,200，Flash 写入使用这里选择的速率。</p>
-          </div>
-
-          <div className="field">
-            <span className="label">上传固件</span>
+            <span className="label"><b>02</b> 上传固件 / PACKAGE</span>
             <button
               type="button"
               className="dropzone"
@@ -194,7 +178,7 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
                   {pkg ? ` · ${formatSize(pkg.totalSize)}` : ''}
                 </span>
               ) : (
-                <span>拖入或选择 .fwpkg</span>
+                <span className="drop-prompt"><b>+</b> 拖入或选择 .fwpkg <small>LOCAL FILE ONLY</small></span>
               )}
             </button>
             <input
@@ -251,7 +235,7 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
             <div className="bar-fill" style={{ width: `${percent}%` }} />
           </div>
           <p className="hint">
-            握手与 loaderboot 115200 → 切换至 {downloadBaud.toLocaleString('zh-CN')} → Ymodem 写区 → 复位并验证启动日志
+            烧录流程：ROM 握手 → loaderboot → Ymodem 写区 → 复位并验证启动日志
           </p>
           {!hasWebSerial() ? (
             <p className="error-text">当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge，并在 localhost 或 HTTPS 下打开。</p>
@@ -260,9 +244,20 @@ export function FlashPage({ ports, port, onSelectPort, onAddPort, onRefreshPorts
 
       </div>
 
-      <pre className="flash-log" ref={logRef}>
-        {logs.length === 0 ? '日志将显示在这里。固件只在本地解析。' : logs.join('\n')}
-      </pre>
+      <section className="flash-log-shell">
+        <header><span>PROCESS LOG</span><span>LOCAL / SECURE</span></header>
+        <pre className="flash-log" ref={logRef}>
+          {logs.length === 0 ? (
+            <span className="flash-log-info">&gt; 等待任务。固件只在本地解析，不会上传。</span>
+          ) : (
+            logs.map((line, index) => (
+              <span className={`flash-log-${classifyFlashLog(line)}`} key={`${index}-${line}`}>
+                {line}{index < logs.length - 1 ? '\n' : ''}
+              </span>
+            ))
+          )}
+        </pre>
+      </section>
     </div>
   )
 }
