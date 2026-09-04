@@ -82,13 +82,11 @@ export async function applyLoaderBaud(
   sendBaudCommand: (payload: Uint8Array) => Promise<void>,
   waitForOldBaudAck: () => Promise<void>,
   reopenSerial: (baud: number) => Promise<void>,
-  waitForNewBaudAck: () => Promise<void>,
 ): Promise<boolean> {
   if (baud === BOOT_BAUD) return false
   await sendBaudCommand(buildBaudratePayload(baud))
   await waitForOldBaudAck()
   await reopenSerial(baud)
-  await waitForNewBaudAck()
   return true
 }
 
@@ -333,16 +331,13 @@ async function switchLoaderBaud(
       async (nextBaud) => {
         await ser.setBaudRate(nextBaud)
       },
-      async () => {
-        await waitAck(ser, 3000)
-      },
     )
   } catch (err) {
     throw new HistoolError(
       `下载波特率切换失败（${baud} baud）：${err instanceof Error ? err.message : String(err)}；请复位后选择 115200 重试`,
     )
   }
-  onLog(`已在 ${baud} baud 收到 loaderboot 确认，开始写入 Flash`)
+  onLog(`浏览器串口已切换为 ${baud} baud，开始验证 Flash 通信`)
 }
 
 async function loadLoaderboot(
