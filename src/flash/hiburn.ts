@@ -14,6 +14,8 @@ const CMD_RESET = 0x87
 const ERASE_ALIGN = 0x2000
 const FLOW_NONE = 0
 const FRAME_MAGIC = new Uint8Array([0xef, 0xbe, 0xad, 0xde])
+const HANDSHAKE_ACK_PREFIX = new Uint8Array([0xef, 0xbe, 0xad, 0xde, 0x0c, 0x00, ACK_TYPE, 0x1e])
+const HANDSHAKE_ACK_LENGTH = 12
 
 export class HistoolError extends Error {
   constructor(message: string) {
@@ -103,6 +105,10 @@ function indexOf(hay: Uint8Array, needle: Uint8Array): number {
     return i
   }
   return -1
+}
+
+export function hasHandshakeAck(bytes: Uint8Array): boolean {
+  return indexOf(bytes, HANDSHAKE_ACK_PREFIX) >= 0
 }
 
 export function buildFrame(cmd: number, payload: Uint8Array): Uint8Array {
@@ -257,6 +263,11 @@ async function handshake(
       next.set(acc)
       next.set(chunk, acc.length)
       acc = next
+      const handshakeAckAt = indexOf(acc, HANDSHAKE_ACK_PREFIX)
+      if (handshakeAckAt >= 0) {
+        const restAt = Math.min(acc.length, handshakeAckAt + HANDSHAKE_ACK_LENGTH)
+        return copyBytes(acc.subarray(restAt))
+      }
       while (acc.length > 0) {
         const extracted = extractFirstFrame(acc)
         acc = extracted.rest

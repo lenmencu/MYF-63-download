@@ -7,6 +7,7 @@ import {
   buildBaudratePayload,
   buildFrame,
   extractFirstFrame,
+  hasHandshakeAck,
   HistoolError,
   parseFrame,
 } from '../src/flash/hiburn.ts'
@@ -76,6 +77,17 @@ test('frame extraction survives noise, partial input and preserves Ymodem bytes'
   const extracted = extractFirstFrame(input)
   assert.deepEqual(extracted.frame, frame)
   assert.deepEqual(extracted.rest, new Uint8Array([0x43]))
+})
+
+test('ROM handshake accepts its fixed ACK header when trailing CRC bytes are unusable', () => {
+  const romReplyMixedWithBootLog = new Uint8Array([
+    0x62, 0x6f, 0x6f, 0x74, 0x0d, 0x0a,
+    0xef, 0xbe, 0xad, 0xde, 0x0c, 0x00, 0xe1, 0x1e,
+    0x5a, 0x00, 0x61, 0x74,
+  ])
+
+  assert.equal(hasHandshakeAck(romReplyMixedWithBootLog), true)
+  assert.equal(hasHandshakeAck(new Uint8Array([0xef, 0xbe, 0xad, 0xde, 0x0c, 0x00, 0xe1, 0x00])), false)
 })
 
 test('BS2X loader may continue when its post-Ymodem HiBurn ACK is absent', async () => {
